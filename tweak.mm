@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 #import <dlfcn.h>
 
 #define API(name, ret, ...) static ret (*name)(__VA_ARGS__)
@@ -14,12 +15,23 @@ API(il2cpp_class_get_method_from_name, void**, void*, const char*, int);
 API(il2cpp_class_get_field_from_name, void*, void*, const char*);
 API(il2cpp_field_static_get_value, void, void*, void*);
 
+static bool apiReady = false;
+
 static bool loadAPI() {
-#define L(n) n = (decltype(n))dlsym(RTLD_DEFAULT, #n); if (!n) return false;
+    if (apiReady) return true;
+    void *h = RTLD_DEFAULT;
+    if (!dlsym(h, "il2cpp_domain_get")) {
+        NSString *p = [[NSBundle mainBundle].privateFrameworksPath
+                       stringByAppendingPathComponent:@"UnityFramework.framework/UnityFramework"];
+        void *hh = dlopen(p.UTF8String, RTLD_NOLOAD | RTLD_NOW);
+        if (hh) h = hh;
+    }
+#define L(n) n = (decltype(n))dlsym(h, #n); if (!n) return false;
     L(il2cpp_domain_get) L(il2cpp_thread_attach) L(il2cpp_domain_assembly_open)
     L(il2cpp_assembly_get_image) L(il2cpp_class_from_name) L(il2cpp_runtime_class_init)
     L(il2cpp_class_get_type) L(il2cpp_type_get_object) L(il2cpp_class_get_method_from_name)
     L(il2cpp_class_get_field_from_name) L(il2cpp_field_static_get_value)
+    apiReady = true;
     return true;
 }
 
@@ -75,30 +87,27 @@ static void openUI() {
 @end
 
 static TapHandler *handler;
-static __weak UIWindow *attachedWindow;
+static const void *kMark = &kMark;
 
-static UIWindow *findWindow() {
-    for (UIWindow *w in UIApplication.sharedApplication.windows)
-        if (w.isKeyWindow) return w;
-    return UIApplication.sharedApplication.windows.firstObject;
-}
-
-static void tryAttach() {
-    UIWindow *w = findWindow();
-    if (!w) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ tryAttach(); }); return; }
-    if (w == attachedWindow) return;
-    attachedWindow = w;
-    handler = handler ?: [TapHandler new];
-    UITapGestureRecognizer *g = [[UITapGestureRecognizer alloc] initWithTarget:handler action:@selector(onTap:)];
-    g.numberOfTouchesRequired = 3;
-    g.numberOfTapsRequired = 2;
-    g.cancelsTouchesInView = NO;
-    g.delaysTouchesBegan = NO;
-    g.delaysTouchesEnded = NO;
-    [w addGestureRecognizer:g];
-    NSLog(@"[T] da gan cu chi 3 ngon x2");
+static void attachAll() {
+    for (UIWindow *w in UIApplication.sharedApplication.windows) {
+        if (objc_getAssociatedObject(w, kMark)) continue;
+        UITapGestureRecognizer *g = [[UITapGestureRecognizer alloc] initWithTarget:handler action:@selector(onTap:)];
+        g.numberOfTouchesRequired = 3;
+        g.numberOfTapsRequired = 2;
+        g.cancelsTouchesInView = NO;
+        g.delaysTouchesBegan = NO;
+        g.delaysTouchesEnded = NO;
+        [w addGestureRecognizer:g];
+        objc_setAssociatedObject(w, kMark, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSLog(@"[T] da gan cu chi vao %@", w);
+    }
 }
 
 __attribute__((constructor)) static void init() {
-    dispatch_async(dispatch_get_main_queue(), ^{ tryAttach(); });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        handler = [TapHandler new];
+        NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *x) { attachAll(); }];
+        t.tolerance = 1.0;
+    });
 }
